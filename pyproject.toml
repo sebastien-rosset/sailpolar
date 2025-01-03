@@ -1,0 +1,64 @@
+[tool.poetry]
+name = "sailpolar"
+version = "0.1.0"
+description = "ML-based polar analysis tool for sailboats"
+authors = ["Sebastien Rosset <sebastien.rosset@example.com>"]
+license = "GNU GPL v3"
+readme = "README.md"
+packages = [{include = "sailpolar", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.13"
+numpy = "^2.2.1"
+pandas = "^2.0.0"
+scipy = "^1.7.0"
+scikit-learn = "^1.0.0"
+matplotlib = "^3.4.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^6.0"
+pytest-cov = "^2.0"
+black = "^21.0"
+isort = "^5.0"
+flake8 = "^3.9"
+mypy = "^0.910"
+setuptools = "^69.0.0"
+wheel = "^0.42.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = [
+    "numpy.*",
+    "pandas.*",
+    "scipy.*",
+    "sklearn.*",
+    "matplotlib.*",
+]
+ignore_missing_imports = true
