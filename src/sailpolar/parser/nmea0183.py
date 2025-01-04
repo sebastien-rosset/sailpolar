@@ -14,8 +14,9 @@ sentence types relevant for sailing data analysis, including:
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
-from typing import Optional, List
-import re
+import logging
+import statistics
+from typing import Dict, Optional, List, Set, Tuple
 
 
 @dataclass
@@ -2205,6 +2206,59 @@ class TXTSentence(NMEASentence):
         return f"TXT: {' | '.join(parts)}" if parts else "TXT: Empty message"
 
 
+@dataclass
+class Segment:
+    sentences: List[NMEASentence] = field(default_factory=list)
+
+    @property
+    def talker_ids(self) -> Set[str]:
+        """
+        Returns a set of unique talker IDs in this segment.
+        """
+        return {sentence.talker_id for sentence in self.sentences}
+
+    @property
+    def start_time(self) -> Optional[datetime]:
+        """
+        Returns the earliest timestamp in the segment.
+        Returns None if no sentences have a timestamp.
+        """
+        timestamps = [s.timestamp for s in self.sentences if s.timestamp is not None]
+        return min(timestamps) if timestamps else None
+
+    @property
+    def end_time(self) -> Optional[datetime]:
+        """
+        Returns the latest timestamp in the segment.
+        Returns None if no sentences have a timestamp.
+        """
+        timestamps = [s.timestamp for s in self.sentences if s.timestamp is not None]
+        return max(timestamps) if timestamps else None
+
+    @property
+    def duration(self) -> Optional[timedelta]:
+        """
+        Returns the duration of the segment.
+        Returns None if start or end time cannot be determined.
+        """
+        if self.start_time and self.end_time:
+            return self.end_time - self.start_time
+        return None
+
+    @property
+    def sentence_types(self) -> Set[str]:
+        """
+        Returns a set of unique sentence types in this segment.
+        """
+        return {sentence.sentence_type for sentence in self.sentences}
+
+    def __len__(self) -> int:
+        """
+        Returns the number of sentences in the segment.
+        """
+        return len(self.sentences)
+
+
 SENTENCE_TYPES = {
     "RMC": RMCSentence,
     "VHW": VHWSentence,
@@ -2249,6 +2303,51 @@ class NMEA0183Parser:
         self.fail_unknown = fail_unknown
         # Map of sentence types to their parser classes
         self._sentence_parsers = SENTENCE_TYPES
+        self._current_date = None  # Track current date from RMC sentences
+        self._last_time = None  # Track last seen time for midnight rollover
+
+    def _update_reference_date(self, sentence):
+        """Update reference date from RMC sentences and handle date rollover."""
+        if isinstance(sentence, RMCSentence) and sentence.timestamp:
+            if self._last_time and sentence.timestamp:
+                # Check for day rollover
+                if self._last_time.hour == 23 and sentence.timestamp.hour == 0:
+                    # We've rolled over to a new day
+                    logging.debug(
+                        f"Day rollover detected: {self._last_time} -> {sentence.timestamp}"
+                    )
+
+            self._current_date = sentence.timestamp.date()
+            self._last_time = sentence.timestamp
+            logging.debug(f"Updated reference date to {self._current_date} from RMC")
+
+    def _apply_timestamp(self, sentence):
+        """Apply correct timestamp to sentences that only have time."""
+        if not isinstance(sentence, RMCSentence):  # RMC already has full timestamp
+            if hasattr(sentence, "timestamp") and sentence.timestamp:
+                # If sentence has only time (like GGA)
+                if self._current_date:
+                    # Combine current date with sentence's time
+                    new_timestamp = datetime.combine(
+                        self._current_date, sentence.timestamp.time()
+                    )
+
+                    # Handle case where this time might be for previous day
+                    if (
+                        self._last_time
+                        and new_timestamp.time() > self._last_time.time()
+                        and (new_timestamp - self._last_time) > timedelta(hours=12)
+                    ):
+                        # This time is probably from the previous day
+                        new_timestamp = new_timestamp - timedelta(days=1)
+                        logging.debug(
+                            f"Adjusted timestamp to previous day: {new_timestamp}"
+                        )
+
+                    sentence.timestamp = new_timestamp
+                    logging.debug(
+                        f"Applied timestamp {sentence.timestamp} to {sentence.sentence_type}"
+                    )
 
     @classmethod
     def parse(cls, raw_sentence: str) -> "NMEASentence":
@@ -2305,44 +2404,45 @@ class NMEA0183Parser:
                     raise NMEA0183Error(f"Unsupported sentence type: {sentence_type}")
                 return None
 
-            return self._sentence_parsers[sentence_type].parse(line)
+            sentence = self._sentence_parsers[sentence_type].parse(line)
+
+            # Update reference date from RMC sentences
+            self._update_reference_date(sentence)
+
+            # Apply correct timestamp to non-RMC sentences
+            self._apply_timestamp(sentence)
+
+            return sentence
 
         except NMEA0183Error:
             raise
         except Exception as e:
             raise NMEA0183Error(f"Failed to parse sentence: {str(e)}")
 
-    def parse_file(self, filepath: str) -> List[NMEASentence]:
-        """Parse a file containing NMEA sentences.
-
-        Args:
-            filepath (str): Path to the file containing NMEA sentences
-
-        Returns:
-            List[NMEASentence]: List of parsed sentences
-
-        Raises:
-            NMEA0183Error: If fail_unknown is True and an unknown sentence type is encountered
-        """
-        sentences = []
-        last_timestamp = {}
+    def _analyze_segment_frequency(self, segment: Segment) -> Dict:
+        """Analyze frequency for a single chronological segment"""
         frequency_data = defaultdict(
             lambda: {
                 "count": 0,
                 "total_delta": 0,
                 "min_delta": float("inf"),
-                "max_delta": 0,
+                "max_delta": float("-inf"),
                 "deltas": [],
             }
         )
 
-        def analyze_frequency(talker_id, sentence_type, timestamp):
-            key = (talker_id, sentence_type)
-            if key not in last_timestamp:
-                last_timestamp[key] = timestamp
-            else:
-                delta = timestamp - last_timestamp[key]
-                delta_seconds = delta.total_seconds()
+        # Analyze timestamps within this segment
+        sentences = segment.sentences
+        for i in range(1, len(sentences)):
+            prev_sentence = sentences[i - 1]
+            curr_sentence = sentences[i]
+
+            if prev_sentence.timestamp and curr_sentence.timestamp:
+                key = (curr_sentence.talker_id, curr_sentence.sentence_type)
+                delta_seconds = (
+                    curr_sentence.timestamp - prev_sentence.timestamp
+                ).total_seconds()
+
                 frequency_data[key]["count"] += 1
                 frequency_data[key]["total_delta"] += delta_seconds
                 frequency_data[key]["min_delta"] = min(
@@ -2352,7 +2452,110 @@ class NMEA0183Parser:
                     frequency_data[key]["max_delta"], delta_seconds
                 )
                 frequency_data[key]["deltas"].append(delta_seconds)
-                last_timestamp[key] = timestamp
+
+        # Calculate frequency statistics
+        frequency_stats = {}
+        for key, data in frequency_data.items():
+            if data["count"] > 0:
+                if data["count"] > 1:
+                    avg_delta = data["total_delta"] / data["count"]
+                    min_delta = data["min_delta"]
+                    max_delta = data["max_delta"]
+                    delta_range = max_delta - min_delta
+
+                    frequency_stats[key] = {
+                        "frequency": 1 / avg_delta if avg_delta > 0 else 0,
+                        "min_delta": min_delta,
+                        "max_delta": max_delta,
+                        "delta_range": delta_range,
+                        "is_stable": delta_range < 0.1 * avg_delta,
+                    }
+                else:
+                    # Handle single occurrence case
+                    frequency_stats[key] = {
+                        "frequency": 0,
+                        "min_delta": 0,
+                        "max_delta": 0,
+                        "delta_range": 0,
+                        "is_stable": False,
+                    }
+
+        return frequency_stats
+
+    def _create_segments(self, sentences: List[NMEASentence]) -> List[Segment]:
+        """
+        Segment sentences based on chronological consistency for each talker ID.
+        Creates new segments when:
+        1. Time goes backwards
+        2. There's a gap of more than 1 hour between sentences
+        """
+        # Group sentences by talker ID
+        talker_sentences = defaultdict(list)
+        for sentence in sentences:
+            talker_sentences[sentence.talker_id].append(sentence)
+
+        # Create segments for each talker ID
+        segments = []
+        for talker_id, talker_sent_list in talker_sentences.items():
+            # Sort by timestamp
+            talker_sent_list.sort(
+                key=lambda x: x.timestamp if x.timestamp else datetime.min
+            )
+
+            # Create segments with chronological consistency
+            current_segment = (
+                Segment(sentences=[talker_sent_list[0]])
+                if talker_sent_list
+                else Segment()
+            )
+
+            MAX_TIME_GAP = timedelta(
+                hours=24
+            )  # Maximum allowed time gap within a segment
+
+            for sentence in talker_sent_list[1:]:
+                prev_timestamp = current_segment.sentences[-1].timestamp
+                curr_timestamp = sentence.timestamp
+
+                # Check for time discontinuity
+                if prev_timestamp and curr_timestamp:
+                    time_diff = curr_timestamp - prev_timestamp
+                    if curr_timestamp < prev_timestamp or time_diff > MAX_TIME_GAP:
+                        # Time went backwards or gap too large, start a new segment
+                        logging.warning(
+                            f"Time discontinuity detected for {talker_id}: {time_diff}. Sentence: {sentence}"
+                        )
+                        segments.append(current_segment)
+                        current_segment = Segment(sentences=[sentence])
+                    else:
+                        current_segment.sentences.append(sentence)
+                else:
+                    current_segment.sentences.append(sentence)
+
+            # Add the last segment if not empty
+            if current_segment.sentences:
+                segments.append(current_segment)
+
+        return segments
+
+    def parse_file(self, filepath: str) -> Tuple[List[Segment], List[Dict]]:
+        """Parse a file containing NMEA sentences, handling time discontinuities.
+
+        Args:
+            filepath (str): Path to the file containing NMEA sentences
+
+        Returns:
+            - A list of Segment objects
+            - A list of frequency stats for each segment
+
+        Raises:
+            NMEA0183Error: If fail_unknown is True and an unknown sentence type is encountered
+        """
+        sentences = []
+
+        # Reset parser state
+        self._current_date = None
+        self._last_time = None
 
         with open(filepath, "r") as f:
             for line in f:
@@ -2363,48 +2566,18 @@ class NMEA0183Parser:
                 try:
                     sentence = self.parse_sentence(line)
                     if sentence:
-                        if sentence.timestamp:
-                            analyze_frequency(
-                                sentence.talker_id,
-                                sentence.sentence_type,
-                                sentence.timestamp,
-                            )
                         sentences.append(sentence)
                 except (NMEA0183Error, ChecksumError) as e:
                     if self.fail_unknown and isinstance(e, NMEA0183Error):
                         raise  # Re-raise only NMEA0183Error when fail_unknown is True
                     continue  # Skip invalid sentences otherwise
 
-        # Calculate frequency statistics for each talker ID and sentence type
-        frequency_stats = {}
-        for key, data in frequency_data.items():
-            count = data["count"]
-            if count > 1:
-                avg_delta = data["total_delta"] / (count - 1)
-                min_delta = data["min_delta"]
-                max_delta = data["max_delta"]
-                delta_range = max_delta - min_delta
-                frequency_stats[key] = {
-                    "frequency": 1 / avg_delta,
-                    "min_delta": min_delta,
-                    "max_delta": max_delta,
-                    "delta_range": delta_range,
-                    "is_stable": delta_range
-                    < 0.1 * avg_delta,  # Adjust the threshold as needed
-                }
+        # Create segments
+        segments = self._create_segments(sentences)
 
-        # Interpolate timestamps based on frequency statistics
-        for sentence in sentences:
-            if not sentence.timestamp:
-                key = (sentence.talker_id, sentence.sentence_type)
-                if (
-                    key in last_timestamp
-                    and key in frequency_stats
-                    and frequency_stats[key]["is_stable"]
-                ):
-                    last_timestamp[key] += timedelta(
-                        seconds=1 / frequency_stats[key]["frequency"]
-                    )
-                    sentence.interpolated_timestamp = last_timestamp[key]
+        # Analyze frequency for each segment
+        segment_frequency_stats = []
+        for segment in segments:
+            segment_frequency_stats.append(self._analyze_segment_frequency(segment))
 
-        return sentences, frequency_stats
+        return segments, segment_frequency_stats
