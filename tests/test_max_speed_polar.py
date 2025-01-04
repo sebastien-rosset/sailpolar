@@ -11,7 +11,7 @@ def test_max_speed_polar():
 
     # Parse the NMEA file
     parser = NMEA0183Parser()
-    parsed_sentences = parser.parse_file(nmea_file_path)
+    parsed_sentences, _ = parser.parse_file(nmea_file_path)
 
     # Create an instance of MaxSpeedPolar
     max_speed_polar = MaxSpeedPolar()

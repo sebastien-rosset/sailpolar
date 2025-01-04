@@ -240,11 +240,11 @@ class RMCSentence(NMEASentence):
 
                 date_utc = datetime.strptime(date_str, "%d%m%y").date()
                 # Create timestamp with UTC timezone
-                timestamp = datetime.combine(date_utc, time_utc).replace(tzinfo=timezone.utc)
+                timestamp = datetime.combine(date_utc, time_utc).replace(
+                    tzinfo=timezone.utc
+                )
                 timestamp_info = TimestampInfo(
-                    timestamp=timestamp,
-                    source=TimestampSource.DIRECT,
-                    confidence=1.0
+                    timestamp=timestamp, source=TimestampSource.DIRECT, confidence=1.0
                 )
             except (ValueError, IndexError) as e:
                 # Log parsing error but continue
@@ -2389,14 +2389,20 @@ class NMEA0183Parser:
         """Update reference date from RMC sentences and handle date rollover."""
         if isinstance(sentence, RMCSentence) and sentence.timestamp:
             # Ensure sentence timestamp is timezone-aware (UTC)
-            sentence_time = (sentence.timestamp if sentence.timestamp.tzinfo 
-                            else sentence.timestamp.replace(tzinfo=timezone.utc))
-            
+            sentence_time = (
+                sentence.timestamp
+                if sentence.timestamp.tzinfo
+                else sentence.timestamp.replace(tzinfo=timezone.utc)
+            )
+
             if self._last_time:
                 # Ensure last_time is timezone-aware
-                last_time = (self._last_time if self._last_time.tzinfo 
-                            else self._last_time.replace(tzinfo=timezone.utc))
-                
+                last_time = (
+                    self._last_time
+                    if self._last_time.tzinfo
+                    else self._last_time.replace(tzinfo=timezone.utc)
+                )
+
                 # Check for day rollover
                 if last_time.hour == 23 and sentence_time.hour == 0:
                     # We've rolled over to a new day
@@ -2422,14 +2428,18 @@ class NMEA0183Parser:
                     # Handle case where this time might be for previous day
                     if self._last_time:
                         # Ensure both timestamps are timezone-aware
-                        last_time = (self._last_time if self._last_time.tzinfo 
-                                else self._last_time.replace(tzinfo=timezone.utc))
-                        
-                        if (new_timestamp.time() > last_time.time()
-                                and (new_timestamp - last_time) > timedelta(hours=12)):
+                        last_time = (
+                            self._last_time
+                            if self._last_time.tzinfo
+                            else self._last_time.replace(tzinfo=timezone.utc)
+                        )
+
+                        if new_timestamp.time() > last_time.time() and (
+                            new_timestamp - last_time
+                        ) > timedelta(hours=12):
                             # Roll back one day
                             new_timestamp = new_timestamp - timedelta(days=1)
-                        
+
                     sentence.timestamp = new_timestamp
                     self._last_time = new_timestamp
 
@@ -2676,10 +2686,9 @@ class NMEA0183Parser:
         2. Interpolation between known timestamps
         3. Fallback to sequential interpolation
         """
-        # Find all sentences with direct timestamps 
+        # Find all sentences with direct timestamps
         direct_timestamp_sentences = [
-            s for s in segment.sentences 
-            if s.timestamp is not None
+            s for s in segment.sentences if s.timestamp is not None
         ]
 
         if not direct_timestamp_sentences:
@@ -2687,31 +2696,32 @@ class NMEA0183Parser:
             self._sequential_interpolation(segment)
             return
 
-        # Sort direct timestamp sentences 
+        # Sort direct timestamp sentences
         direct_timestamp_sentences.sort(key=lambda x: x.timestamp)
 
         # First, attempt to fill timestamps by mapping between known timestamps
         self._interpolate_between_known_points(segment, direct_timestamp_sentences)
 
         # If there are still sentences without timestamps, do sequential interpolation
-        remaining_untimestamped = [
-            s for s in segment.sentences 
-            if s.timestamp is None
-        ]
+        remaining_untimestamped = [s for s in segment.sentences if s.timestamp is None]
 
         if remaining_untimestamped:
             # If some sentences are still without timestamps, do sequential interpolation
             self._sequential_interpolation(segment)
 
-    def _interpolate_between_known_points(self, segment: Segment, direct_timestamps: List[NMEASentence]) -> None:
+    def _interpolate_between_known_points(
+        self, segment: Segment, direct_timestamps: List[NMEASentence]
+    ) -> None:
         """
         Interpolate timestamps by mapping sentences between known timestamp points.
-        
+
         This method tries to distribute timestamps across known reference points.
         """
         # Preprocess to find sentence indices
         sentence_index_map = {id(s): i for i, s in enumerate(segment.sentences)}
-        timestamp_indices = [sentence_index_map[id(s)] for s in direct_timestamps if s.timestamp]
+        timestamp_indices = [
+            sentence_index_map[id(s)] for s in direct_timestamps if s.timestamp
+        ]
 
         # Group timestamps by their indices
         for i in range(len(timestamp_indices) - 1):
@@ -2722,56 +2732,63 @@ class NMEA0183Parser:
 
             # Find sentences between these two known timestamp indices
             sentences_in_interval = [
-                s for s in segment.sentences[start_index+1:end_index]
+                s
+                for s in segment.sentences[start_index + 1 : end_index]
                 if s.timestamp is None
             ]
 
             if sentences_in_interval:
                 # Calculate time interval and per-sentence delta
-                time_interval = (end_sentence.timestamp - start_sentence.timestamp).total_seconds()
+                time_interval = (
+                    end_sentence.timestamp - start_sentence.timestamp
+                ).total_seconds()
                 delta_per_message = time_interval / (len(sentences_in_interval) + 1)
 
                 # Interpolate timestamps
                 for j, message in enumerate(sentences_in_interval, 1):
-                    interpolated_time = start_sentence.timestamp + timedelta(seconds=delta_per_message * j)
+                    interpolated_time = start_sentence.timestamp + timedelta(
+                        seconds=delta_per_message * j
+                    )
                     message.set_timestamp(
                         timestamp=interpolated_time,
                         source=TimestampSource.INTERPOLATED_HIGH_CONF,
                         confidence=0.8,
                         reference_talker_id=start_sentence.talker_id,
                         reference_sentence_type=start_sentence.sentence_type,
-                        interval=delta_per_message
+                        interval=delta_per_message,
                     )
 
     def _sequential_interpolation(self, segment: Segment) -> None:
         """
         Perform sequential interpolation when no direct timestamps are available.
-        
+
         This method uses a fixed interval and assigns timestamps sequentially.
         """
         # Use a default interval of 1 second
         DEFAULT_INTERVAL = 1.0
-        
-        # Find the first reference datetime 
+
+        # Find the first reference datetime
         reference_datetime = datetime.now(timezone.utc)
         for sentence in segment.sentences:
             if sentence.timestamp:
                 reference_datetime = sentence.timestamp
                 break
-        
+
         # Assign sequential timestamps
         for i, sentence in enumerate(segment.sentences):
             if sentence.timestamp is None:
-                interpolated_time = reference_datetime + timedelta(seconds=i * DEFAULT_INTERVAL)
+                interpolated_time = reference_datetime + timedelta(
+                    seconds=i * DEFAULT_INTERVAL
+                )
                 sentence.set_timestamp(
                     timestamp=interpolated_time,
                     source=TimestampSource.INTERPOLATED_LOW_CONF,
                     confidence=0.5,
                     reference_talker_id=None,
                     reference_sentence_type=None,
-                    interval=DEFAULT_INTERVAL
+                    interval=DEFAULT_INTERVAL,
                 )
-                
+
     def parse_file(self, filepath: str) -> Tuple[List[Segment], List[Dict]]:
         """Parse a file containing NMEA sentences, handling time discontinuities.
 

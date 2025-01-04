@@ -260,8 +260,9 @@ def test_file_parsing_fail_unknown():
 
     # Now do the assertion
     for sentence in all_sentences:
-        assert (sentence.timestamp is not None or 
-                sentence.timestamp_info is not None), f"Sentence missing timestamp: {sentence.raw}"
+        assert (
+            sentence.timestamp is not None or sentence.timestamp_info is not None
+        ), f"Sentence missing timestamp: {sentence.raw}"
 
 
 def test_file_parsing_skip_unknown():
