@@ -1,6 +1,7 @@
 import os
 from abc import ABC, abstractmethod
 import csv
+import numpy as np
 
 
 class BasePolar(ABC):
