@@ -151,6 +151,7 @@ class RMCSentence(NMEASentence):
     sog: float = None
     cog: float = None
     mag_var: float = None
+    timestamp_decimals: int = 0  # Number of decimal places in the timestamp
 
     @classmethod
     def parse(cls, raw_sentence: str) -> "RMCSentence":
@@ -161,19 +162,33 @@ class RMCSentence(NMEASentence):
         if len(fields) < 12:
             raise NMEA0183Error("Invalid RMC sentence")
 
-        # Parse time
+        # Parse time with decimal precision
         time_str = fields[1]
         date_str = fields[9]
+        timestamp = None
+        timestamp_decimals = 0
+
         if time_str and date_str:
-            time_utc = time(
-                hour=int(time_str[0:2]),
-                minute=int(time_str[2:4]),
-                second=int(time_str[4:6]),
-            )
+            # Check for decimal seconds
+            if "." in time_str:
+                decimals = time_str.split(".")[1]
+                timestamp_decimals = len(decimals)
+                hour = int(time_str[0:2])
+                minute = int(time_str[2:4])
+                second = int(time_str[4:6])
+                microsecond = int(float(f"0.{decimals}") * 1000000)
+                time_utc = time(
+                    hour=hour, minute=minute, second=second, microsecond=microsecond
+                )
+            else:
+                time_utc = time(
+                    hour=int(time_str[0:2]),
+                    minute=int(time_str[2:4]),
+                    second=int(time_str[4:6]),
+                )
+
             date_utc = datetime.strptime(date_str, "%d%m%y").date()
             timestamp = datetime.combine(date_utc, time_utc)
-        else:
-            timestamp = None
 
         # Parse position
         if fields[3] and fields[4] and fields[5] and fields[6]:
@@ -192,6 +207,7 @@ class RMCSentence(NMEASentence):
             sentence_type=base.sentence_type,
             raw=raw_sentence,
             timestamp=timestamp,
+            timestamp_decimals=timestamp_decimals,
             status=fields[2],
             latitude=lat,
             longitude=lon,
@@ -2421,196 +2437,129 @@ class NMEA0183Parser:
 
     def _analyze_segment_frequency(self, segment: Segment) -> Dict:
         """Analyze frequency for a single chronological segment"""
-        frequency_data = defaultdict(
-            lambda: {
-                "count": 0,
-                "total_delta": 0,
-                "min_delta": float("inf"),
-                "max_delta": float("-inf"),
-                "deltas": [],
-            }
-        )
+        frequency_data = defaultdict(lambda: {
+            'count': 0,
+            'total_delta': 0,
+            'min_delta': float('inf'),
+            'max_delta': float('-inf'),
+            'deltas': []
+        })
 
-        # Analyze timestamps within this segment
-        sentences = segment.sentences
-        for i in range(1, len(sentences)):
-            prev_sentence = sentences[i - 1]
-            curr_sentence = sentences[i]
+        # Group sentences by type for time delta analysis
+        sentences_by_type = defaultdict(list)
+        for sentence in segment.sentences:
+            if sentence.timestamp:
+                # For RMC, include precision in key
+                if isinstance(sentence, RMCSentence):
+                    key = (sentence.talker_id, sentence.sentence_type, sentence.timestamp_decimals)
+                else:
+                    key = (sentence.talker_id, sentence.sentence_type)
+                sentences_by_type[key].append(sentence)
 
-            if prev_sentence.timestamp and curr_sentence.timestamp:
-                key = (curr_sentence.talker_id, curr_sentence.sentence_type)
-                delta_seconds = (
-                    curr_sentence.timestamp - prev_sentence.timestamp
-                ).total_seconds()
+        # Analyze deltas within each type
+        for key, type_sentences in sentences_by_type.items():
+            # Sort by timestamp for delta calculation
+            type_sentences.sort(key=lambda x: x.timestamp)
+            
+            # Calculate deltas
+            for i in range(1, len(type_sentences)):
+                prev = type_sentences[i-1]
+                curr = type_sentences[i]
+                
+                delta = (curr.timestamp - prev.timestamp).total_seconds()
+                
+                if delta > 0:  # Only track non-zero deltas
+                    frequency_data[key]['count'] += 1
+                    frequency_data[key]['total_delta'] += delta
+                    frequency_data[key]['min_delta'] = min(frequency_data[key]['min_delta'], delta)
+                    frequency_data[key]['max_delta'] = max(frequency_data[key]['max_delta'], delta)
+                    frequency_data[key]['deltas'].append(delta)
 
-                frequency_data[key]["count"] += 1
-                frequency_data[key]["total_delta"] += delta_seconds
-                frequency_data[key]["min_delta"] = min(
-                    frequency_data[key]["min_delta"], delta_seconds
-                )
-                frequency_data[key]["max_delta"] = max(
-                    frequency_data[key]["max_delta"], delta_seconds
-                )
-                frequency_data[key]["deltas"].append(delta_seconds)
-
-        # Calculate frequency statistics
+        # Calculate statistics
         frequency_stats = {}
         for key, data in frequency_data.items():
-            if data["count"] > 0:
-                if data["count"] > 1:
-                    avg_delta = data["total_delta"] / data["count"]
-                    min_delta = data["min_delta"]
-                    max_delta = data["max_delta"]
-                    delta_range = max_delta - min_delta
-
-                    frequency_stats[key] = {
-                        "frequency": 1 / avg_delta if avg_delta > 0 else 0,
-                        "min_delta": min_delta,
-                        "max_delta": max_delta,
-                        "delta_range": delta_range,
-                        "is_stable": delta_range < 0.1 * avg_delta,
-                    }
-                else:
-                    # Handle single occurrence case
-                    frequency_stats[key] = {
-                        "frequency": 0,
-                        "min_delta": 0,
-                        "max_delta": 0,
-                        "delta_range": 0,
-                        "is_stable": False,
-                    }
+            if data['deltas']:  # Only if we have valid deltas
+                avg_delta = statistics.mean(data['deltas'])
+                delta_range = data['max_delta'] - data['min_delta']
+                
+                frequency_stats[key] = {
+                    'frequency': 1 / avg_delta if avg_delta > 0 else 0,
+                    'min_delta': data['min_delta'],
+                    'max_delta': data['max_delta'],
+                    'delta_range': delta_range,
+                    'is_stable': delta_range < 0.1 * avg_delta
+                }
+                
+                # Only print stats for RMC and major navigation sentences
+                if key[1] in ['RMC', 'GGA', 'GLL', 'GBS']:
+                    print(f"\nStats for {key}:")
+                    if len(key) > 2:  # RMC with precision
+                        print(f"  Type: {key[1]}, Talker: {key[0]}, Decimals: {key[2]}")
+                    else:
+                        print(f"  Type: {key[1]}, Talker: {key[0]}")
+                    print(f"  Frequency: {1/avg_delta:.2f} Hz")
+                    print(f"  Min Delta: {data['min_delta']:.4f} seconds")
+                    print(f"  Max Delta: {data['max_delta']:.4f} seconds")
+                    print(f"  Is Stable: {delta_range < 0.1 * avg_delta}")
 
         return frequency_stats
 
     def _create_segments(self, sentences: List[NMEASentence]) -> List[Segment]:
         """
-        Segment sentences based on time continuity using a primary talker ID.
-        Creates segments based on the primary talker's timestamps, then groups
-        other sentences into these segments based on temporal proximity.
+        Create segments based on time continuity of primary source while preserving original order.
+        Uses GP RMC with highest precision as primary source for time continuity checks.
         """
-        # Define primary talker ID (GPS is usually most reliable for time)
+        print("Starting segmentation...")
         PRIMARY_TALKER = "GP"
-        MAX_TIME_GAP = timedelta(minutes=5)
-
-        # Split sentences by talker ID
-        print("Grouping by talker ID...")
-        sentences_by_talker = defaultdict(list)
+        MAX_TIME_GAP = timedelta(hours=5)
+        
+        # First pass: find our primary RMC source characteristics
+        max_decimals = -1
         for sentence in sentences:
-            sentences_by_talker[sentence.talker_id].append(sentence)
-
-        print(f"Found talker IDs: {list(sentences_by_talker.keys())}")
-
-        # If no primary talker, use the talker with the most timestamped sentences
-        if PRIMARY_TALKER not in sentences_by_talker:
-            timestamped_counts = {
-                talker: len([s for s in sens if s.timestamp is not None])
-                for talker, sens in sentences_by_talker.items()
-            }
-            if not timestamped_counts:
-                # No timestamps at all - group by talker ID
-                return [
-                    Segment(sentences=sens) for sens in sentences_by_talker.values()
-                ]
-            PRIMARY_TALKER = max(timestamped_counts.items(), key=lambda x: x[1])[0]
-
-        print(f"Using primary talker: {PRIMARY_TALKER}")
-
-        # Sort primary talker sentences by timestamp
-        primary_sentences = [
-            s for s in sentences_by_talker[PRIMARY_TALKER] if s.timestamp is not None
-        ]
-
-        if not primary_sentences:
-            # No timestamped sentences from primary talker
-            return [Segment(sentences=sens) for sens in sentences_by_talker.values()]
-
-        primary_sentences.sort(key=lambda x: x.timestamp)
-        overall_start = primary_sentences[0].timestamp
-        overall_end = primary_sentences[-1].timestamp
-
-        print(f"Found {len(primary_sentences)} timestamped primary sentences")
-
-        # If we only have one continuous segment from the primary talker
-        # (no large gaps), create a single segment with all sentences
-        primary_continuous = True
-        for i in range(1, len(primary_sentences)):
-            time_diff = (
-                primary_sentences[i].timestamp - primary_sentences[i - 1].timestamp
-            )
-            if time_diff > MAX_TIME_GAP or time_diff < timedelta(0):
-                primary_continuous = False
-                break
-
-        if primary_continuous:
-            print("Single continuous segment detected")
-            # Create one segment with all sentences
-            all_sentences = []
-            # Add timestamped sentences from all talkers
-            for talker_sentences in sentences_by_talker.values():
-                timestamped = [s for s in talker_sentences if s.timestamp is not None]
-                all_sentences.extend(timestamped)
-
-            # Sort all timestamped sentences
-            all_sentences.sort(key=lambda x: x.timestamp)
-
-            # Add non-timestamped sentences at the end
-            for talker_sentences in sentences_by_talker.values():
-                non_timestamped = [s for s in talker_sentences if s.timestamp is None]
-                all_sentences.extend(non_timestamped)
-
-            return [Segment(sentences=all_sentences)]
-
-        # If we have multiple segments, use the original segmentation logic
-        print("Multiple segments detected")
+            if (isinstance(sentence, RMCSentence) and 
+                sentence.talker_id == PRIMARY_TALKER and 
+                sentence.timestamp_decimals > max_decimals):
+                max_decimals = sentence.timestamp_decimals
+        
+        if max_decimals == -1:
+            print("No GP RMC sentences found, using all sentences as one segment")
+            return [Segment(sentences=sentences)]
+            
+        print(f"Primary source will be GP RMC with {max_decimals} decimal places")
+        
+        # Second pass: check time continuity of primary source
         segments = []
-        current_segment = Segment(sentences=[primary_sentences[0]])
-
-        for sentence in primary_sentences[1:]:
-            prev_timestamp = current_segment.sentences[-1].timestamp
-            curr_timestamp = sentence.timestamp
-            time_diff = curr_timestamp - prev_timestamp
-
-            if time_diff > MAX_TIME_GAP or time_diff < timedelta(0):
-                segments.append(current_segment)
-                current_segment = Segment(sentences=[sentence])
-            else:
-                current_segment.sentences.append(sentence)
-
-        if current_segment.sentences:
-            segments.append(current_segment)
-
-        # Process other talkers only if we have multiple segments
-        print(f"Processing other talkers for {len(segments)} segments")
-        for talker_id, talker_sentences in sentences_by_talker.items():
-            if talker_id == PRIMARY_TALKER:
-                continue
-
-            for sentence in talker_sentences:
-                if sentence.timestamp is None:
-                    if segments:
-                        segments[-1].sentences.append(sentence)
+        current_segment = []
+        last_primary_time = None
+        
+        for sentence in sentences:
+            # Check if this is a primary source sentence
+            is_primary = (isinstance(sentence, RMCSentence) and 
+                        sentence.talker_id == PRIMARY_TALKER and 
+                        sentence.timestamp_decimals == max_decimals)
+            
+            if is_primary and sentence.timestamp:
+                if last_primary_time is None:
+                    # First primary sentence
+                    last_primary_time = sentence.timestamp
                 else:
-                    # Find the closest segment
-                    best_segment = min(
-                        segments,
-                        key=lambda seg: min(
-                            abs(sentence.timestamp - s.timestamp)
-                            for s in seg.sentences
-                            if s.timestamp is not None
-                        ),
-                    )
-                    best_segment.sentences.append(sentence)
-
-        # Final sort of each segment
-        for segment in segments:
-            segment.sentences.sort(
-                key=lambda x: (
-                    x.timestamp if x.timestamp else datetime.max,
-                    x.talker_id,
-                )
-            )
-
-        print("Segmentation complete")
+                    time_diff = sentence.timestamp - last_primary_time
+                    if time_diff < timedelta(0) or time_diff > MAX_TIME_GAP:
+                        # Time went backwards or too large gap - start new segment
+                        print(f"Time discontinuity in primary source: {time_diff}")
+                        if current_segment:
+                            segments.append(Segment(sentences=current_segment))
+                        current_segment = []
+                    last_primary_time = sentence.timestamp
+            
+            # Add sentence to current segment
+            current_segment.append(sentence)
+        
+        # Add final segment if not empty
+        if current_segment:
+            segments.append(Segment(sentences=current_segment))
+        
+        print(f"Created {len(segments)} segments")
         return segments
 
     def parse_file(self, filepath: str) -> Tuple[List[Segment], List[Dict]]:
