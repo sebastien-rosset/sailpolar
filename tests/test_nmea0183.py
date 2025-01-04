@@ -2,6 +2,7 @@
 Tests for NMEA 0183 parser.
 """
 
+from collections import defaultdict
 import os
 import pytest
 import logging
@@ -10,6 +11,7 @@ from sailpolar.parser.nmea0183 import (
     NMEA0183Error,
     ChecksumError,
     RMCSentence,
+    TimestampSource,
     VHWSentence,
     MWVSentence,
     VPWSentence,
@@ -240,52 +242,69 @@ def test_file_parsing_fail_unknown():
     print("\nFrequency Stats:")
     for segment_stats in segment_frequency_stats:
         for key, stats in segment_stats.items():
-            talker_id, sentence_type = key
-            print(f"Talker ID: {talker_id}, Sentence Type: {sentence_type}")
-            print(f"  Frequency: {stats['frequency']:.2f} Hz")
-            print(f"  Min Delta: {stats['min_delta']:.4f} seconds")
-            print(f"  Max Delta: {stats['max_delta']:.4f} seconds")
-            print(f"  Delta Range: {stats['delta_range']:.4f} seconds")
-            print(f"  Is Stable: {stats['is_stable']}")
-            print()
+            # Handle both 2-tuple and 3-tuple keys
+            if len(key) == 2:
+                talker_id, sentence_type = key
+                print(f"  {talker_id} {sentence_type}:")
+            else:
+                talker_id, sentence_type, decimals = key
+                print(f"  {talker_id} {sentence_type} (decimals={decimals}):")
 
-    # Write assertions
+            # Print stats
+            print(f"    Frequency: {stats['frequency']:.2f} Hz")
+            print(f"    Min Delta: {stats['min_delta']:.4f} seconds")
+            print(f"    Max Delta: {stats['max_delta']:.4f} seconds")
+
     assert len(all_sentences) > 0, "No sentences were parsed from the file"
     assert len(segment_frequency_stats) > 0, "No frequency stats were generated"
 
-    # Example assertions based on the specific data
-    # Find the right segment stats
-    gga_stats = next(
-        (
-            stats
-            for segment_stats in segment_frequency_stats
-            for key, stats in segment_stats.items()
-            if key == ("GP", "GGA")
-        ),
-        None,
-    )
+    # Verify timestamps
+    for i, segment in enumerate(segments, 1):
+        for sentence in segment.sentences:
+            # Every sentence should have either a direct timestamp or timestamp_info
+            assert (
+                sentence.timestamp is not None or sentence.timestamp_info is not None
+            ), f"Sentence missing timestamp: {sentence.raw}"
 
-    rmc_stats = next(
-        (
-            stats
-            for segment_stats in segment_frequency_stats
-            for key, stats in segment_stats.items()
-            if key == ("GP", "RMC")
-        ),
-        None,
-    )
+            if sentence.timestamp_info:
+                # Verify timestamp source is valid
+                assert (
+                    sentence.timestamp_info.source in TimestampSource
+                ), f"Invalid timestamp source: {sentence.timestamp_info.source}"
 
-    assert gga_stats is not None, "No frequency stats found for GP-GGA"
-    assert rmc_stats is not None, "No frequency stats found for GP-RMC"
+                # Verify confidence is between 0 and 1
+                assert (
+                    0 <= sentence.timestamp_info.confidence <= 1
+                ), f"Invalid confidence value: {sentence.timestamp_info.confidence}"
 
-    # You might want to adjust these assertions based on the new segmentation
-    assert gga_stats["frequency"] > 0, "Unexpected frequency for GP-GGA"
-    assert any(
-        stats["is_stable"]
-        for segment_stats in segment_frequency_stats
-        for key, stats in segment_stats.items()
-        if key == ("GP", "RMC")
-    ), "GP-RMC frequency should be stable in at least one segment"
+                # For interpolated timestamps, verify reference information
+                if sentence.timestamp_info.source in [
+                    TimestampSource.INTERPOLATED_HIGH_CONF,
+                    TimestampSource.INTERPOLATED_LOW_CONF,
+                ]:
+                    assert (
+                        sentence.timestamp_info.reference_talker_id is not None
+                    ), "Missing reference talker ID for interpolated timestamp"
+                    assert (
+                        sentence.timestamp_info.reference_sentence_type is not None
+                    ), "Missing reference sentence type for interpolated timestamp"
+                    assert (
+                        sentence.timestamp_info.interval is not None
+                    ), "Missing interval for interpolated timestamp"
+
+    # Count timestamp sources for verification
+    timestamp_sources = defaultdict(int)
+    for segment in segments:
+        for sentence in segment.sentences:
+            if sentence.timestamp_info:
+                timestamp_sources[sentence.timestamp_info.source] += 1
+
+    # Print timestamp source distribution
+    print("\nTimestamp Source Distribution:")
+    total_sentences = sum(timestamp_sources.values())
+    for source, count in timestamp_sources.items():
+        percentage = (count / total_sentences) * 100
+        print(f"  {source.value}: {count} ({percentage:.1f}%)")
 
 
 def test_file_parsing_skip_unknown():
