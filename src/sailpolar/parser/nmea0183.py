@@ -13,7 +13,7 @@ sentence types relevant for sailing data analysis, including:
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from enum import Enum
 import logging
 import statistics
@@ -215,29 +215,42 @@ class RMCSentence(NMEASentence):
         time_str = fields[1]
         date_str = fields[9]
         timestamp = None
+        timestamp_info = None
         timestamp_decimals = 0
 
         if time_str and date_str:
-            # Check for decimal seconds
-            if "." in time_str:
-                decimals = time_str.split(".")[1]
-                timestamp_decimals = len(decimals)
-                hour = int(time_str[0:2])
-                minute = int(time_str[2:4])
-                second = int(time_str[4:6])
-                microsecond = int(float(f"0.{decimals}") * 1000000)
-                time_utc = time(
-                    hour=hour, minute=minute, second=second, microsecond=microsecond
-                )
-            else:
-                time_utc = time(
-                    hour=int(time_str[0:2]),
-                    minute=int(time_str[2:4]),
-                    second=int(time_str[4:6]),
-                )
+            try:
+                # Check for decimal seconds
+                if "." in time_str:
+                    decimals = time_str.split(".")[1]
+                    timestamp_decimals = len(decimals)
+                    hour = int(time_str[0:2])
+                    minute = int(time_str[2:4])
+                    second = int(time_str[4:6])
+                    microsecond = int(float(f"0.{decimals}") * 1000000)
+                    time_utc = time(
+                        hour=hour, minute=minute, second=second, microsecond=microsecond
+                    )
+                else:
+                    time_utc = time(
+                        hour=int(time_str[0:2]),
+                        minute=int(time_str[2:4]),
+                        second=int(time_str[4:6]),
+                    )
 
-            date_utc = datetime.strptime(date_str, "%d%m%y").date()
-            timestamp = datetime.combine(date_utc, time_utc)
+                date_utc = datetime.strptime(date_str, "%d%m%y").date()
+                # Create timestamp with UTC timezone
+                timestamp = datetime.combine(date_utc, time_utc).replace(tzinfo=timezone.utc)
+                timestamp_info = TimestampInfo(
+                    timestamp=timestamp,
+                    source=TimestampSource.DIRECT,
+                    confidence=1.0
+                )
+            except (ValueError, IndexError) as e:
+                # Log parsing error but continue
+                print(f"Warning: Error parsing timestamp in RMC sentence: {e}")
+                print(f"  Time: {time_str}, Date: {date_str}")
+                timestamp = None
 
         # Parse position
         if fields[3] and fields[4] and fields[5] and fields[6]:
@@ -256,6 +269,7 @@ class RMCSentence(NMEASentence):
             sentence_type=base.sentence_type,
             raw=raw_sentence,
             timestamp=timestamp,
+            timestamp_info=timestamp_info,
             timestamp_decimals=timestamp_decimals,
             status=fields[2],
             latitude=lat,
@@ -2374,16 +2388,24 @@ class NMEA0183Parser:
     def _update_reference_date(self, sentence):
         """Update reference date from RMC sentences and handle date rollover."""
         if isinstance(sentence, RMCSentence) and sentence.timestamp:
-            if self._last_time and sentence.timestamp:
+            # Ensure sentence timestamp is timezone-aware (UTC)
+            sentence_time = (sentence.timestamp if sentence.timestamp.tzinfo 
+                            else sentence.timestamp.replace(tzinfo=timezone.utc))
+            
+            if self._last_time:
+                # Ensure last_time is timezone-aware
+                last_time = (self._last_time if self._last_time.tzinfo 
+                            else self._last_time.replace(tzinfo=timezone.utc))
+                
                 # Check for day rollover
-                if self._last_time.hour == 23 and sentence.timestamp.hour == 0:
+                if last_time.hour == 23 and sentence_time.hour == 0:
                     # We've rolled over to a new day
                     logging.debug(
-                        f"Day rollover detected: {self._last_time} -> {sentence.timestamp}"
+                        f"Day rollover detected: {last_time} -> {sentence_time}"
                     )
 
-            self._current_date = sentence.timestamp.date()
-            self._last_time = sentence.timestamp
+            self._current_date = sentence_time.date()
+            self._last_time = sentence_time
             logging.debug(f"Updated reference date to {self._current_date} from RMC")
 
     def _apply_timestamp(self, sentence):
@@ -2392,27 +2414,24 @@ class NMEA0183Parser:
             if hasattr(sentence, "timestamp") and sentence.timestamp:
                 # If sentence has only time (like GGA)
                 if self._current_date:
-                    # Combine current date with sentence's time
+                    # Combine current date with sentence's time and set UTC timezone
                     new_timestamp = datetime.combine(
                         self._current_date, sentence.timestamp.time()
-                    )
+                    ).replace(tzinfo=timezone.utc)
 
                     # Handle case where this time might be for previous day
-                    if (
-                        self._last_time
-                        and new_timestamp.time() > self._last_time.time()
-                        and (new_timestamp - self._last_time) > timedelta(hours=12)
-                    ):
-                        # This time is probably from the previous day
-                        new_timestamp = new_timestamp - timedelta(days=1)
-                        logging.debug(
-                            f"Adjusted timestamp to previous day: {new_timestamp}"
-                        )
-
+                    if self._last_time:
+                        # Ensure both timestamps are timezone-aware
+                        last_time = (self._last_time if self._last_time.tzinfo 
+                                else self._last_time.replace(tzinfo=timezone.utc))
+                        
+                        if (new_timestamp.time() > last_time.time()
+                                and (new_timestamp - last_time) > timedelta(hours=12)):
+                            # Roll back one day
+                            new_timestamp = new_timestamp - timedelta(days=1)
+                        
                     sentence.timestamp = new_timestamp
-                    logging.debug(
-                        f"Applied timestamp {sentence.timestamp} to {sentence.sentence_type}"
-                    )
+                    self._last_time = new_timestamp
 
     @classmethod
     def parse(cls, raw_sentence: str) -> "NMEASentence":
@@ -2650,235 +2669,109 @@ class NMEA0183Parser:
 
     def interpolate_timestamps(self, segment: Segment) -> None:
         """
-        Interpolate timestamps for sentences without timestamps.
-        This method first analyzes the frequency patterns of messages with timestamps,
-        then uses this information to interpolate timestamps for messages without them.
+        Interpolate timestamps for all sentences in a segment using multiple strategies.
+
+        Strategies in order of preference:
+        1. Direct timestamp from RMC sentences
+        2. Interpolation between known timestamps
+        3. Fallback to sequential interpolation
         """
-        # Determine the expected interval for each message type
-        frequency_data = defaultdict(
-            lambda: {
-                "count": 0,
-                "total_delta": 0,
-                "min_delta": float("inf"),
-                "max_delta": float("-inf"),
-                "deltas": [],
-                "delta_counts": defaultdict(int),
-            }
-        )
+        # Find all sentences with direct timestamps 
+        direct_timestamp_sentences = [
+            s for s in segment.sentences 
+            if s.timestamp is not None
+        ]
 
-        debug_stats = {
-            'total_sentences': 0,
-            'has_direct_timestamp': 0,
-            'interpolation_attempts': 0,
-            'interpolation_failures': defaultdict(int),
-            'by_message_type': defaultdict(lambda: {
-                'total': 0,
-                'direct': 0,
-                'high_conf_interp': 0,
-                'low_conf_interp': 0,
-                'previous': 0,
-                'failures': defaultdict(int)
-            })
-        }
+        if not direct_timestamp_sentences:
+            # If no direct timestamps, use sequential interpolation with default interval
+            self._sequential_interpolation(segment)
+            return
 
-        # Group sentences by type for analysis
-        sentences_by_type = defaultdict(list)
+        # Sort direct timestamp sentences 
+        direct_timestamp_sentences.sort(key=lambda x: x.timestamp)
+
+        # First, attempt to fill timestamps by mapping between known timestamps
+        self._interpolate_between_known_points(segment, direct_timestamp_sentences)
+
+        # If there are still sentences without timestamps, do sequential interpolation
+        remaining_untimestamped = [
+            s for s in segment.sentences 
+            if s.timestamp is None
+        ]
+
+        if remaining_untimestamped:
+            # If some sentences are still without timestamps, do sequential interpolation
+            self._sequential_interpolation(segment)
+
+    def _interpolate_between_known_points(self, segment: Segment, direct_timestamps: List[NMEASentence]) -> None:
+        """
+        Interpolate timestamps by mapping sentences between known timestamp points.
+        
+        This method tries to distribute timestamps across known reference points.
+        """
+        # Preprocess to find sentence indices
+        sentence_index_map = {id(s): i for i, s in enumerate(segment.sentences)}
+        timestamp_indices = [sentence_index_map[id(s)] for s in direct_timestamps if s.timestamp]
+
+        # Group timestamps by their indices
+        for i in range(len(timestamp_indices) - 1):
+            start_index = timestamp_indices[i]
+            end_index = timestamp_indices[i + 1]
+            start_sentence = direct_timestamps[i]
+            end_sentence = direct_timestamps[i + 1]
+
+            # Find sentences between these two known timestamp indices
+            sentences_in_interval = [
+                s for s in segment.sentences[start_index+1:end_index]
+                if s.timestamp is None
+            ]
+
+            if sentences_in_interval:
+                # Calculate time interval and per-sentence delta
+                time_interval = (end_sentence.timestamp - start_sentence.timestamp).total_seconds()
+                delta_per_message = time_interval / (len(sentences_in_interval) + 1)
+
+                # Interpolate timestamps
+                for j, message in enumerate(sentences_in_interval, 1):
+                    interpolated_time = start_sentence.timestamp + timedelta(seconds=delta_per_message * j)
+                    message.set_timestamp(
+                        timestamp=interpolated_time,
+                        source=TimestampSource.INTERPOLATED_HIGH_CONF,
+                        confidence=0.8,
+                        reference_talker_id=start_sentence.talker_id,
+                        reference_sentence_type=start_sentence.sentence_type,
+                        interval=delta_per_message
+                    )
+
+    def _sequential_interpolation(self, segment: Segment) -> None:
+        """
+        Perform sequential interpolation when no direct timestamps are available.
+        
+        This method uses a fixed interval and assigns timestamps sequentially.
+        """
+        # Use a default interval of 1 second
+        DEFAULT_INTERVAL = 1.0
+        
+        # Find the first reference datetime 
+        reference_datetime = datetime.now(timezone.utc)
         for sentence in segment.sentences:
             if sentence.timestamp:
-                if isinstance(sentence, RMCSentence):
-                    key = (
-                        sentence.talker_id,
-                        sentence.sentence_type,
-                        sentence.timestamp_decimals,
-                    )
-                else:
-                    key = (sentence.talker_id, sentence.sentence_type)
-                sentences_by_type[key].append(sentence)
-
-        # Analyze deltas within each type
-        for key, type_sentences in sentences_by_type.items():
-            type_sentences.sort(key=lambda x: x.timestamp)
-
-            for i in range(1, len(type_sentences)):
-                prev = type_sentences[i - 1]
-                curr = type_sentences[i]
-
-                delta = (curr.timestamp - prev.timestamp).total_seconds()
-
-                if delta > 0:  # Only track non-zero deltas
-                    frequency_data[key]["count"] += 1
-                    frequency_data[key]["total_delta"] += delta
-                    frequency_data[key]["min_delta"] = min(
-                        frequency_data[key]["min_delta"], delta
-                    )
-                    frequency_data[key]["max_delta"] = max(
-                        frequency_data[key]["max_delta"], delta
-                    )
-                    frequency_data[key]["deltas"].append(delta)
-                    rounded_delta = round(delta, 1)
-                    frequency_data[key]["delta_counts"][rounded_delta] += 1
-
-        # Calculate expected intervals for each message type
-        expected_intervals = {}
-        for key, data in frequency_data.items():
-            if data["deltas"]:
-                total_samples = len(data["deltas"])
-
-                # Find dominant interval (if any)
-                dominant_delta = None
-                dominant_percentage = 0
-                for delta, count in data["delta_counts"].items():
-                    percentage = (count / total_samples) * 100
-                    if percentage > dominant_percentage:
-                        dominant_percentage = percentage
-                        dominant_delta = delta
-
-                if dominant_percentage > 90:  # High confidence if >90% consistent
-                    expected_intervals[key] = {
-                        "interval": dominant_delta,
-                        "confidence": "high",
-                        "percentage": dominant_percentage,
-                    }
-                else:  # Use weighted average for less consistent patterns
-                    weighted_sum = 0
-                    total_weight = 0
-                    for delta, count in data["delta_counts"].items():
-                        weight = count / total_samples
-                        if (
-                            weight > 0.1
-                        ):  # Only consider intervals that occur >10% of the time
-                            weighted_sum += delta * weight
-                            total_weight += weight
-
-                    if total_weight > 0:
-                        expected_intervals[key] = {
-                            "interval": weighted_sum / total_weight,
-                            "confidence": "low",
-                            "percentage": dominant_percentage,
-                        }
-
-        print("\nDetected Intervals:")
-        for key, interval_info in expected_intervals.items():
-            msg_type = f"{key[0]} {key[1]}"
-            if len(key) > 2:
-                msg_type += f" (decimals={key[2]})"
-            print(f"  {msg_type}:")
-            print(f"    Interval: {interval_info['interval']:.1f}s")
-            print(f"    Confidence: {interval_info['confidence']}")
-            print(f"    Consistency: {interval_info['percentage']:.1f}%")
-
-        # Now interpolate timestamps
-        last_timestamp = None
-        last_timestamps = defaultdict(
-            lambda: None
-        )  # Track last timestamp per message type
-
-        for sentence in segment.sentences:
-            debug_stats['total_sentences'] += 1
-            msg_key = (sentence.talker_id, sentence.sentence_type)
-            if isinstance(sentence, RMCSentence):
-                msg_key += (sentence.timestamp_decimals,)
-            
-            debug_stats['by_message_type'][msg_key]['total'] += 1
-
-            if sentence.timestamp:
-                debug_stats['has_direct_timestamp'] += 1
-                debug_stats['by_message_type'][msg_key]['direct'] += 1
+                reference_datetime = sentence.timestamp
+                break
+        
+        # Assign sequential timestamps
+        for i, sentence in enumerate(segment.sentences):
+            if sentence.timestamp is None:
+                interpolated_time = reference_datetime + timedelta(seconds=i * DEFAULT_INTERVAL)
                 sentence.set_timestamp(
-                    timestamp=sentence.timestamp,
-                    source=TimestampSource.DIRECT,
-                    confidence=1.0
+                    timestamp=interpolated_time,
+                    source=TimestampSource.INTERPOLATED_LOW_CONF,
+                    confidence=0.5,
+                    reference_talker_id=None,
+                    reference_sentence_type=None,
+                    interval=DEFAULT_INTERVAL
                 )
-                last_timestamp = sentence.timestamp
-                last_timestamps[msg_key] = sentence.timestamp
-
-        # Second pass: interpolate missing timestamps
-        for sentence in segment.sentences:
-            if not sentence.timestamp:
-                msg_key = (sentence.talker_id, sentence.sentence_type)
-                if isinstance(sentence, RMCSentence):
-                    msg_key += (sentence.timestamp_decimals,)
-
-                debug_stats['interpolation_attempts'] += 1
-
-                if msg_key in expected_intervals and last_timestamps[msg_key]:
-                    interval_info = expected_intervals[msg_key]
-                    estimated_timestamp = last_timestamps[msg_key] + timedelta(
-                        seconds=interval_info['interval']
-                    )
-
-                    # Validate the estimated timestamp
-                    if last_timestamp:
-                        time_diff = abs((estimated_timestamp - last_timestamp).total_seconds())
-                        if time_diff >= interval_info['interval'] * 2:
-                            debug_stats['interpolation_failures'][msg_key] += 1
-                            debug_stats['by_message_type'][msg_key]['failures']['time_diff_too_large'] += 1
-                            # Fall back to previous timestamp
-                            sentence.set_timestamp(
-                                timestamp=last_timestamp,
-                                source=TimestampSource.PREVIOUS,
-                                confidence=0.3
-                            )
-                            debug_stats['by_message_type'][msg_key]['previous'] += 1
-                            continue
-
-                    if interval_info['confidence'] == 'high':
-                        sentence.set_timestamp(
-                            timestamp=estimated_timestamp,
-                            source=TimestampSource.INTERPOLATED_HIGH_CONF,
-                            confidence=interval_info['percentage'] / 100,
-                            reference_talker_id=msg_key[0],
-                            reference_sentence_type=msg_key[1],
-                            interval=interval_info['interval']
-                        )
-                        debug_stats['by_message_type'][msg_key]['high_conf_interp'] += 1
-                    else:
-                        sentence.set_timestamp(
-                            timestamp=estimated_timestamp,
-                            source=TimestampSource.INTERPOLATED_LOW_CONF,
-                            confidence=interval_info['percentage'] / 100,
-                            reference_talker_id=msg_key[0],
-                            reference_sentence_type=msg_key[1],
-                            interval=interval_info['interval']
-                        )
-                        debug_stats['by_message_type'][msg_key]['low_conf_interp'] += 1
-                else:
-                    if msg_key not in expected_intervals:
-                        debug_stats['interpolation_failures'][msg_key] += 1
-                        debug_stats['by_message_type'][msg_key]['failures']['no_interval_data'] += 1
-                    elif not last_timestamps[msg_key]:
-                        debug_stats['interpolation_failures'][msg_key] += 1
-                        debug_stats['by_message_type'][msg_key]['failures']['no_last_timestamp'] += 1
-
-                    # Fallback to previous timestamp
-                    sentence.set_timestamp(
-                        timestamp=last_timestamp,
-                        source=TimestampSource.PREVIOUS,
-                        confidence=0.3
-                    )
-                    debug_stats['by_message_type'][msg_key]['previous'] += 1
-
-        # Print detailed debug stats
-        print("\nInterpolation Statistics:")
-        print(f"Total sentences: {debug_stats['total_sentences']}")
-        print(f"Direct timestamps: {debug_stats['has_direct_timestamp']}")
-        print(f"Interpolation attempts: {debug_stats['interpolation_attempts']}")
-        print("\nBy Message Type:")
-        for msg_key, stats in debug_stats['by_message_type'].items():
-            msg_type = f"{msg_key[0]} {msg_key[1]}"
-            if len(msg_key) > 2:
-                msg_type += f" (decimals={msg_key[2]})"
-            print(f"\n  {msg_type}:")
-            print(f"    Total: {stats['total']}")
-            print(f"    Direct: {stats['direct']}")
-            print(f"    High confidence interpolation: {stats['high_conf_interp']}")
-            print(f"    Low confidence interpolation: {stats['low_conf_interp']}")
-            print(f"    Previous: {stats['previous']}")
-            if stats['failures']:
-                print("    Failures:")
-                for reason, count in stats['failures'].items():
-                    print(f"      {reason}: {count}")
-
+                
     def parse_file(self, filepath: str) -> Tuple[List[Segment], List[Dict]]:
         """Parse a file containing NMEA sentences, handling time discontinuities.
 
