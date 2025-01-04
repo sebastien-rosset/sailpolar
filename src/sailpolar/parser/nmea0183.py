@@ -35,23 +35,34 @@ class ChecksumError(NMEA0183Error):
     computed: str
     received: str
 
+
 class TimestampSource(Enum):
     """Enum representing the source of a timestamp"""
+
     DIRECT = "direct"  # Timestamp from the sentence itself
-    INTERPOLATED_HIGH_CONF = "interpolated_high_conf"  # Interpolated with high confidence
-    INTERPOLATED_LOW_CONF = "interpolated_low_conf"   # Interpolated with low confidence
+    INTERPOLATED_HIGH_CONF = (
+        "interpolated_high_conf"  # Interpolated with high confidence
+    )
+    INTERPOLATED_LOW_CONF = "interpolated_low_conf"  # Interpolated with low confidence
     PREVIOUS = "previous"  # Using previous sentence timestamp
-    NONE = "none"  
+    NONE = "none"
+
 
 @dataclass
 class TimestampInfo:
     """Class to store timestamp information including source and confidence"""
+
     timestamp: datetime
     source: TimestampSource
     confidence: float  # 0-1 scale
-    reference_sentence_type: Optional[str] = None  # What sentence type was used for interpolation
-    reference_talker_id: Optional[str] = None      # What talker ID was used for interpolation
-    interval: Optional[float] = None 
+    reference_sentence_type: Optional[str] = (
+        None  # What sentence type was used for interpolation
+    )
+    reference_talker_id: Optional[str] = (
+        None  # What talker ID was used for interpolation
+    )
+    interval: Optional[float] = None
+
 
 @dataclass
 class NMEASentence:
@@ -128,10 +139,15 @@ class NMEASentence:
         # Create base sentence object - no more SENTENCE_TYPES lookup
         return cls(talker_id=talker_id, sentence_type=sentence_type, raw=raw_sentence)
 
-    def set_timestamp(self, timestamp: datetime, source: TimestampSource, 
-                     confidence: float = 1.0, reference_talker_id: Optional[str] = None,
-                     reference_sentence_type: Optional[str] = None,
-                     interval: Optional[float] = None) -> None:
+    def set_timestamp(
+        self,
+        timestamp: datetime,
+        source: TimestampSource,
+        confidence: float = 1.0,
+        reference_talker_id: Optional[str] = None,
+        reference_sentence_type: Optional[str] = None,
+        interval: Optional[float] = None,
+    ) -> None:
         """Set timestamp with source information"""
         self.timestamp = timestamp
         self.timestamp_info = TimestampInfo(
@@ -140,8 +156,9 @@ class NMEASentence:
             confidence=confidence,
             reference_sentence_type=reference_sentence_type,
             reference_talker_id=reference_talker_id,
-            interval=interval
+            interval=interval,
         )
+
 
 def validate_checksum(data: str, checksum: str) -> bool:
     """Validate NMEA checksum."""
@@ -2476,7 +2493,7 @@ class NMEA0183Parser:
                 "min_delta": float("inf"),
                 "max_delta": float("-inf"),
                 "deltas": [],
-                'delta_counts': defaultdict(int)
+                "delta_counts": defaultdict(int),
             }
         )
 
@@ -2519,7 +2536,7 @@ class NMEA0183Parser:
                     frequency_data[key]["deltas"].append(delta)
                     # Round to 1 decimal place for counting
                     rounded_delta = round(delta, 1)
-                    frequency_data[key]['delta_counts'][rounded_delta] += 1
+                    frequency_data[key]["delta_counts"][rounded_delta] += 1
 
         # Calculate statistics
         frequency_stats = {}
@@ -2527,7 +2544,7 @@ class NMEA0183Parser:
             if data["deltas"]:  # Only if we have valid deltas
                 avg_delta = statistics.mean(data["deltas"])
                 delta_range = data["max_delta"] - data["min_delta"]
-                total_samples = len(data['deltas'])
+                total_samples = len(data["deltas"])
 
                 frequency_stats[key] = {
                     "frequency": 1 / avg_delta if avg_delta > 0 else 0,
@@ -2539,10 +2556,13 @@ class NMEA0183Parser:
 
                 # Sort deltas by frequency
                 delta_distribution = sorted(
-                    data['delta_counts'].items(),
-                    key=lambda x: (-x[1], x[0])  # Sort by count (descending) then value
+                    data["delta_counts"].items(),
+                    key=lambda x: (
+                        -x[1],
+                        x[0],
+                    ),  # Sort by count (descending) then value
                 )
-                
+
                 # Only print stats for RMC and major navigation sentences
                 if key[1] in ["RMC", "GGA", "GLL", "GBS"]:
                     print(f"\nStats for {key}:")
@@ -2557,8 +2577,12 @@ class NMEA0183Parser:
                     print("  Delta Distribution:")
                     for delta_value, count in delta_distribution:
                         percentage = (count / total_samples) * 100
-                        if percentage > 1:  # Only show deltas that appear > 1% of the time
-                            print(f"    {delta_value:.1f}s: {count} occurrences ({percentage:.1f}%)")
+                        if (
+                            percentage > 1
+                        ):  # Only show deltas that appear > 1% of the time
+                            print(
+                                f"    {delta_value:.1f}s: {count} occurrences ({percentage:.1f}%)"
+                            )
 
         return frequency_stats
 
@@ -2623,29 +2647,50 @@ class NMEA0183Parser:
 
         print(f"Created {len(segments)} segments")
         return segments
-    
+
     def interpolate_timestamps(self, segment: Segment) -> None:
         """
         Interpolate timestamps for sentences without timestamps.
         This method first analyzes the frequency patterns of messages with timestamps,
         then uses this information to interpolate timestamps for messages without them.
         """
-        # First, determine the expected interval for each message type
-        frequency_data = defaultdict(lambda: {
-            'count': 0,
-            'total_delta': 0,
-            'min_delta': float('inf'),
-            'max_delta': float('-inf'),
-            'deltas': [],
-            'delta_counts': defaultdict(int)
-        })
+        # Determine the expected interval for each message type
+        frequency_data = defaultdict(
+            lambda: {
+                "count": 0,
+                "total_delta": 0,
+                "min_delta": float("inf"),
+                "max_delta": float("-inf"),
+                "deltas": [],
+                "delta_counts": defaultdict(int),
+            }
+        )
+
+        debug_stats = {
+            'total_sentences': 0,
+            'has_direct_timestamp': 0,
+            'interpolation_attempts': 0,
+            'interpolation_failures': defaultdict(int),
+            'by_message_type': defaultdict(lambda: {
+                'total': 0,
+                'direct': 0,
+                'high_conf_interp': 0,
+                'low_conf_interp': 0,
+                'previous': 0,
+                'failures': defaultdict(int)
+            })
+        }
 
         # Group sentences by type for analysis
         sentences_by_type = defaultdict(list)
         for sentence in segment.sentences:
             if sentence.timestamp:
                 if isinstance(sentence, RMCSentence):
-                    key = (sentence.talker_id, sentence.sentence_type, sentence.timestamp_decimals)
+                    key = (
+                        sentence.talker_id,
+                        sentence.sentence_type,
+                        sentence.timestamp_decimals,
+                    )
                 else:
                     key = (sentence.talker_id, sentence.sentence_type)
                 sentences_by_type[key].append(sentence)
@@ -2653,32 +2698,36 @@ class NMEA0183Parser:
         # Analyze deltas within each type
         for key, type_sentences in sentences_by_type.items():
             type_sentences.sort(key=lambda x: x.timestamp)
-            
+
             for i in range(1, len(type_sentences)):
-                prev = type_sentences[i-1]
+                prev = type_sentences[i - 1]
                 curr = type_sentences[i]
-                
+
                 delta = (curr.timestamp - prev.timestamp).total_seconds()
-                
+
                 if delta > 0:  # Only track non-zero deltas
-                    frequency_data[key]['count'] += 1
-                    frequency_data[key]['total_delta'] += delta
-                    frequency_data[key]['min_delta'] = min(frequency_data[key]['min_delta'], delta)
-                    frequency_data[key]['max_delta'] = max(frequency_data[key]['max_delta'], delta)
-                    frequency_data[key]['deltas'].append(delta)
+                    frequency_data[key]["count"] += 1
+                    frequency_data[key]["total_delta"] += delta
+                    frequency_data[key]["min_delta"] = min(
+                        frequency_data[key]["min_delta"], delta
+                    )
+                    frequency_data[key]["max_delta"] = max(
+                        frequency_data[key]["max_delta"], delta
+                    )
+                    frequency_data[key]["deltas"].append(delta)
                     rounded_delta = round(delta, 1)
-                    frequency_data[key]['delta_counts'][rounded_delta] += 1
+                    frequency_data[key]["delta_counts"][rounded_delta] += 1
 
         # Calculate expected intervals for each message type
         expected_intervals = {}
         for key, data in frequency_data.items():
-            if data['deltas']:
-                total_samples = len(data['deltas'])
-                
+            if data["deltas"]:
+                total_samples = len(data["deltas"])
+
                 # Find dominant interval (if any)
                 dominant_delta = None
                 dominant_percentage = 0
-                for delta, count in data['delta_counts'].items():
+                for delta, count in data["delta_counts"].items():
                     percentage = (count / total_samples) * 100
                     if percentage > dominant_percentage:
                         dominant_percentage = percentage
@@ -2686,98 +2735,149 @@ class NMEA0183Parser:
 
                 if dominant_percentage > 90:  # High confidence if >90% consistent
                     expected_intervals[key] = {
-                        'interval': dominant_delta,
-                        'confidence': 'high',
-                        'percentage': dominant_percentage
+                        "interval": dominant_delta,
+                        "confidence": "high",
+                        "percentage": dominant_percentage,
                     }
                 else:  # Use weighted average for less consistent patterns
                     weighted_sum = 0
                     total_weight = 0
-                    for delta, count in data['delta_counts'].items():
+                    for delta, count in data["delta_counts"].items():
                         weight = count / total_samples
-                        if weight > 0.1:  # Only consider intervals that occur >10% of the time
+                        if (
+                            weight > 0.1
+                        ):  # Only consider intervals that occur >10% of the time
                             weighted_sum += delta * weight
                             total_weight += weight
-                    
+
                     if total_weight > 0:
                         expected_intervals[key] = {
-                            'interval': weighted_sum / total_weight,
-                            'confidence': 'low',
-                            'percentage': dominant_percentage
+                            "interval": weighted_sum / total_weight,
+                            "confidence": "low",
+                            "percentage": dominant_percentage,
                         }
+
+        print("\nDetected Intervals:")
+        for key, interval_info in expected_intervals.items():
+            msg_type = f"{key[0]} {key[1]}"
+            if len(key) > 2:
+                msg_type += f" (decimals={key[2]})"
+            print(f"  {msg_type}:")
+            print(f"    Interval: {interval_info['interval']:.1f}s")
+            print(f"    Confidence: {interval_info['confidence']}")
+            print(f"    Consistency: {interval_info['percentage']:.1f}%")
 
         # Now interpolate timestamps
         last_timestamp = None
-        last_timestamps = defaultdict(lambda: None)  # Track last timestamp per message type
+        last_timestamps = defaultdict(
+            lambda: None
+        )  # Track last timestamp per message type
 
-        # First pass: set direct timestamps and track last known timestamps
         for sentence in segment.sentences:
+            debug_stats['total_sentences'] += 1
+            msg_key = (sentence.talker_id, sentence.sentence_type)
+            if isinstance(sentence, RMCSentence):
+                msg_key += (sentence.timestamp_decimals,)
+            
+            debug_stats['by_message_type'][msg_key]['total'] += 1
+
             if sentence.timestamp:
+                debug_stats['has_direct_timestamp'] += 1
+                debug_stats['by_message_type'][msg_key]['direct'] += 1
                 sentence.set_timestamp(
                     timestamp=sentence.timestamp,
                     source=TimestampSource.DIRECT,
                     confidence=1.0
                 )
                 last_timestamp = sentence.timestamp
-                
-                if isinstance(sentence, RMCSentence):
-                    key = (sentence.talker_id, sentence.sentence_type, sentence.timestamp_decimals)
-                else:
-                    key = (sentence.talker_id, sentence.sentence_type)
-                last_timestamps[key] = sentence.timestamp
+                last_timestamps[msg_key] = sentence.timestamp
 
         # Second pass: interpolate missing timestamps
         for sentence in segment.sentences:
             if not sentence.timestamp:
-                # Determine message type key
+                msg_key = (sentence.talker_id, sentence.sentence_type)
                 if isinstance(sentence, RMCSentence):
-                    key = (sentence.talker_id, sentence.sentence_type, sentence.timestamp_decimals)
-                else:
-                    key = (sentence.talker_id, sentence.sentence_type)
+                    msg_key += (sentence.timestamp_decimals,)
 
-                if key in expected_intervals and last_timestamps[key]:
-                    interval_info = expected_intervals[key]
-                    estimated_timestamp = last_timestamps[key] + timedelta(
+                debug_stats['interpolation_attempts'] += 1
+
+                if msg_key in expected_intervals and last_timestamps[msg_key]:
+                    interval_info = expected_intervals[msg_key]
+                    estimated_timestamp = last_timestamps[msg_key] + timedelta(
                         seconds=interval_info['interval']
                     )
 
-                    # Validate the estimated timestamp isn't too far from last known timestamp
-                    if (last_timestamp and 
-                        abs((estimated_timestamp - last_timestamp).total_seconds()) < 
-                        interval_info['interval'] * 2):
-                        
-                        if interval_info['confidence'] == 'high':
+                    # Validate the estimated timestamp
+                    if last_timestamp:
+                        time_diff = abs((estimated_timestamp - last_timestamp).total_seconds())
+                        if time_diff >= interval_info['interval'] * 2:
+                            debug_stats['interpolation_failures'][msg_key] += 1
+                            debug_stats['by_message_type'][msg_key]['failures']['time_diff_too_large'] += 1
+                            # Fall back to previous timestamp
                             sentence.set_timestamp(
-                                timestamp=estimated_timestamp,
-                                source=TimestampSource.INTERPOLATED_HIGH_CONF,
-                                confidence=interval_info['percentage'] / 100,
-                                reference_talker_id=key[0],
-                                reference_sentence_type=key[1],
-                                interval=interval_info['interval']
+                                timestamp=last_timestamp,
+                                source=TimestampSource.PREVIOUS,
+                                confidence=0.3
                             )
-                        else:
-                            sentence.set_timestamp(
-                                timestamp=estimated_timestamp,
-                                source=TimestampSource.INTERPOLATED_LOW_CONF,
-                                confidence=interval_info['percentage'] / 100,
-                                reference_talker_id=key[0],
-                                reference_sentence_type=key[1],
-                                interval=interval_info['interval']
-                            )
-                    else:
-                        # If estimated timestamp seems too far off, use last known timestamp
+                            debug_stats['by_message_type'][msg_key]['previous'] += 1
+                            continue
+
+                    if interval_info['confidence'] == 'high':
                         sentence.set_timestamp(
-                            timestamp=last_timestamp,
-                            source=TimestampSource.PREVIOUS,
-                            confidence=0.3
+                            timestamp=estimated_timestamp,
+                            source=TimestampSource.INTERPOLATED_HIGH_CONF,
+                            confidence=interval_info['percentage'] / 100,
+                            reference_talker_id=msg_key[0],
+                            reference_sentence_type=msg_key[1],
+                            interval=interval_info['interval']
                         )
-                elif last_timestamp:
+                        debug_stats['by_message_type'][msg_key]['high_conf_interp'] += 1
+                    else:
+                        sentence.set_timestamp(
+                            timestamp=estimated_timestamp,
+                            source=TimestampSource.INTERPOLATED_LOW_CONF,
+                            confidence=interval_info['percentage'] / 100,
+                            reference_talker_id=msg_key[0],
+                            reference_sentence_type=msg_key[1],
+                            interval=interval_info['interval']
+                        )
+                        debug_stats['by_message_type'][msg_key]['low_conf_interp'] += 1
+                else:
+                    if msg_key not in expected_intervals:
+                        debug_stats['interpolation_failures'][msg_key] += 1
+                        debug_stats['by_message_type'][msg_key]['failures']['no_interval_data'] += 1
+                    elif not last_timestamps[msg_key]:
+                        debug_stats['interpolation_failures'][msg_key] += 1
+                        debug_stats['by_message_type'][msg_key]['failures']['no_last_timestamp'] += 1
+
                     # Fallback to previous timestamp
                     sentence.set_timestamp(
                         timestamp=last_timestamp,
                         source=TimestampSource.PREVIOUS,
                         confidence=0.3
                     )
+                    debug_stats['by_message_type'][msg_key]['previous'] += 1
+
+        # Print detailed debug stats
+        print("\nInterpolation Statistics:")
+        print(f"Total sentences: {debug_stats['total_sentences']}")
+        print(f"Direct timestamps: {debug_stats['has_direct_timestamp']}")
+        print(f"Interpolation attempts: {debug_stats['interpolation_attempts']}")
+        print("\nBy Message Type:")
+        for msg_key, stats in debug_stats['by_message_type'].items():
+            msg_type = f"{msg_key[0]} {msg_key[1]}"
+            if len(msg_key) > 2:
+                msg_type += f" (decimals={msg_key[2]})"
+            print(f"\n  {msg_type}:")
+            print(f"    Total: {stats['total']}")
+            print(f"    Direct: {stats['direct']}")
+            print(f"    High confidence interpolation: {stats['high_conf_interp']}")
+            print(f"    Low confidence interpolation: {stats['low_conf_interp']}")
+            print(f"    Previous: {stats['previous']}")
+            if stats['failures']:
+                print("    Failures:")
+                for reason, count in stats['failures'].items():
+                    print(f"      {reason}: {count}")
 
     def parse_file(self, filepath: str) -> Tuple[List[Segment], List[Dict]]:
         """Parse a file containing NMEA sentences, handling time discontinuities.
@@ -2822,7 +2922,7 @@ class NMEA0183Parser:
             # First analyze frequency to understand the patterns
             stats = self._analyze_segment_frequency(segment)
             segment_frequency_stats.append(stats)
-            
+
             # Then interpolate timestamps based on those patterns
             self.interpolate_timestamps(segment)
 
