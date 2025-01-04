@@ -175,11 +175,35 @@ def test_file_parsing_fail_unknown():
 
     # Define the expected sentence types
     expected_sentence_types = {
-        'BOD', 'DBT', 'GBS', 'GGA', 'GLL', 'GSA', 'GSV', 'HDM', 'MTA', 'MTW',
-        'MWD', 'MWV', 'RMB', 'RMC', 'RME', 'RMM', 'RMZ', 'RTE', 'TXT', 'VHW',
-        'VLW', 'VPW', 'VTG', 'VWR', 'VWT', 'WPL', 'XTE'
+        "BOD",
+        "DBT",
+        "GBS",
+        "GGA",
+        "GLL",
+        "GSA",
+        "GSV",
+        "HDM",
+        "MTA",
+        "MTW",
+        "MWD",
+        "MWV",
+        "RMB",
+        "RMC",
+        "RME",
+        "RMM",
+        "RMZ",
+        "RTE",
+        "TXT",
+        "VHW",
+        "VLW",
+        "VPW",
+        "VTG",
+        "VWR",
+        "VWT",
+        "WPL",
+        "XTE",
     }
-    
+
     # Assert that the set of sentence types matches the expected set
     assert sentence_types == expected_sentence_types, "Unexpected sentence types found"
 
@@ -197,14 +221,18 @@ def test_file_parsing_fail_unknown():
         print(f"  Delta Range: {stats['delta_range']:.4f} seconds")
         print(f"  Is Stable: {stats['is_stable']}")
         print()
-    
+
     # Write assertions
     assert len(sentences) > 0, "No sentences were parsed from the file"
     assert len(frequency_stats) > 0, "No frequency stats were generated"
-    
+
     # Example assertions based on the specific data
-    assert frequency_stats[('GP', 'GGA')]['frequency'] == 1.0, "Unexpected frequency for GP-GGA"
-    assert frequency_stats[('GP', 'RMC')]['is_stable'], "GP-RMC frequency should be stable"
+    assert (
+        frequency_stats[("GP", "GGA")]["frequency"] == 1.0
+    ), "Unexpected frequency for GP-GGA"
+    assert frequency_stats[("GP", "RMC")][
+        "is_stable"
+    ], "GP-RMC frequency should be stable"
 
 
 def test_file_parsing_skip_unknown():

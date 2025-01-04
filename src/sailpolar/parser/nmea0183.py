@@ -2326,13 +2326,15 @@ class NMEA0183Parser:
         """
         sentences = []
         last_timestamp = {}
-        frequency_data = defaultdict(lambda: {
-            'count': 0,
-            'total_delta': 0,
-            'min_delta': float('inf'),
-            'max_delta': 0,
-            'deltas': []
-        })
+        frequency_data = defaultdict(
+            lambda: {
+                "count": 0,
+                "total_delta": 0,
+                "min_delta": float("inf"),
+                "max_delta": 0,
+                "deltas": [],
+            }
+        )
 
         def analyze_frequency(talker_id, sentence_type, timestamp):
             key = (talker_id, sentence_type)
@@ -2341,11 +2343,15 @@ class NMEA0183Parser:
             else:
                 delta = timestamp - last_timestamp[key]
                 delta_seconds = delta.total_seconds()
-                frequency_data[key]['count'] += 1
-                frequency_data[key]['total_delta'] += delta_seconds
-                frequency_data[key]['min_delta'] = min(frequency_data[key]['min_delta'], delta_seconds)
-                frequency_data[key]['max_delta'] = max(frequency_data[key]['max_delta'], delta_seconds)
-                frequency_data[key]['deltas'].append(delta_seconds)
+                frequency_data[key]["count"] += 1
+                frequency_data[key]["total_delta"] += delta_seconds
+                frequency_data[key]["min_delta"] = min(
+                    frequency_data[key]["min_delta"], delta_seconds
+                )
+                frequency_data[key]["max_delta"] = max(
+                    frequency_data[key]["max_delta"], delta_seconds
+                )
+                frequency_data[key]["deltas"].append(delta_seconds)
                 last_timestamp[key] = timestamp
 
         with open(filepath, "r") as f:
@@ -2358,7 +2364,11 @@ class NMEA0183Parser:
                     sentence = self.parse_sentence(line)
                     if sentence:
                         if sentence.timestamp:
-                            analyze_frequency(sentence.talker_id, sentence.sentence_type, sentence.timestamp)
+                            analyze_frequency(
+                                sentence.talker_id,
+                                sentence.sentence_type,
+                                sentence.timestamp,
+                            )
                         sentences.append(sentence)
                 except (NMEA0183Error, ChecksumError) as e:
                     if self.fail_unknown and isinstance(e, NMEA0183Error):
@@ -2368,26 +2378,33 @@ class NMEA0183Parser:
         # Calculate frequency statistics for each talker ID and sentence type
         frequency_stats = {}
         for key, data in frequency_data.items():
-            count = data['count']
+            count = data["count"]
             if count > 1:
-                avg_delta = data['total_delta'] / (count - 1)
-                min_delta = data['min_delta']
-                max_delta = data['max_delta']
+                avg_delta = data["total_delta"] / (count - 1)
+                min_delta = data["min_delta"]
+                max_delta = data["max_delta"]
                 delta_range = max_delta - min_delta
                 frequency_stats[key] = {
-                    'frequency': 1 / avg_delta,
-                    'min_delta': min_delta,
-                    'max_delta': max_delta,
-                    'delta_range': delta_range,
-                    'is_stable': delta_range < 0.1 * avg_delta  # Adjust the threshold as needed
+                    "frequency": 1 / avg_delta,
+                    "min_delta": min_delta,
+                    "max_delta": max_delta,
+                    "delta_range": delta_range,
+                    "is_stable": delta_range
+                    < 0.1 * avg_delta,  # Adjust the threshold as needed
                 }
 
         # Interpolate timestamps based on frequency statistics
         for sentence in sentences:
             if not sentence.timestamp:
                 key = (sentence.talker_id, sentence.sentence_type)
-                if key in last_timestamp and key in frequency_stats and frequency_stats[key]['is_stable']:
-                    last_timestamp[key] += timedelta(seconds=1 / frequency_stats[key]['frequency'])
+                if (
+                    key in last_timestamp
+                    and key in frequency_stats
+                    and frequency_stats[key]["is_stable"]
+                ):
+                    last_timestamp[key] += timedelta(
+                        seconds=1 / frequency_stats[key]["frequency"]
+                    )
                     sentence.interpolated_timestamp = last_timestamp[key]
-        
+
         return sentences, frequency_stats
