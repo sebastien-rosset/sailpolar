@@ -168,13 +168,49 @@ def test_nmea_error_messages():
 def test_file_parsing_fail_unknown():
     """Test parsing of NMEA file with strict mode (fail on unknown sentences)."""
     parser = NMEA0183Parser(fail_unknown=True)
-    sentences = parser.parse_file(TEST_FILE)
+    sentences, frequency_stats = parser.parse_file(TEST_FILE)
+
+    # Collect unique sentence types
+    sentence_types = set(sentence.sentence_type for sentence in sentences)
+
+    # Define the expected sentence types
+    expected_sentence_types = {
+        'BOD', 'DBT', 'GBS', 'GGA', 'GLL', 'GSA', 'GSV', 'HDM', 'MTA', 'MTW',
+        'MWD', 'MWV', 'RMB', 'RMC', 'RME', 'RMM', 'RMZ', 'RTE', 'TXT', 'VHW',
+        'VLW', 'VPW', 'VTG', 'VWR', 'VWT', 'WPL', 'XTE'
+    }
+    
+    # Assert that the set of sentence types matches the expected set
+    assert sentence_types == expected_sentence_types, "Unexpected sentence types found"
+
+    # Print the set of unique sentence types
+    print(f"Found {len(sentence_types)} Unique Sentence Types: {sentence_types}")
+
+    # Print the frequency stats
+    print("Frequency Stats:")
+    for key, stats in frequency_stats.items():
+        talker_id, sentence_type = key
+        print(f"Talker ID: {talker_id}, Sentence Type: {sentence_type}")
+        print(f"  Frequency: {stats['frequency']:.2f} Hz")
+        print(f"  Min Delta: {stats['min_delta']:.4f} seconds")
+        print(f"  Max Delta: {stats['max_delta']:.4f} seconds")
+        print(f"  Delta Range: {stats['delta_range']:.4f} seconds")
+        print(f"  Is Stable: {stats['is_stable']}")
+        print()
+    
+    # Write assertions
+    assert len(sentences) > 0, "No sentences were parsed from the file"
+    assert len(frequency_stats) > 0, "No frequency stats were generated"
+    
+    # Example assertions based on the specific data
+    assert frequency_stats[('GP', 'GGA')]['frequency'] == 1.0, "Unexpected frequency for GP-GGA"
+    assert frequency_stats[('GP', 'RMC')]['is_stable'], "GP-RMC frequency should be stable"
 
 
 def test_file_parsing_skip_unknown():
     """Test parsing of NMEA file while skipping unknown sentences."""
     parser = NMEA0183Parser(fail_unknown=False)  # This is default behavior
-    sentences = parser.parse_file(TEST_FILE)
+    sentences, frequency_stats = parser.parse_file(TEST_FILE)
 
     assert len(sentences) > 0, "No sentences were parsed"
 
