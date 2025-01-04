@@ -2484,58 +2484,133 @@ class NMEA0183Parser:
 
     def _create_segments(self, sentences: List[NMEASentence]) -> List[Segment]:
         """
-        Segment sentences based on chronological consistency for each talker ID.
-        Creates new segments when:
-        1. Time goes backwards
-        2. There's a gap of more than 1 hour between sentences
+        Segment sentences based on time continuity using a primary talker ID.
+        Creates segments based on the primary talker's timestamps, then groups
+        other sentences into these segments based on temporal proximity.
         """
-        # Group sentences by talker ID
-        talker_sentences = defaultdict(list)
+        # Define primary talker ID (GPS is usually most reliable for time)
+        PRIMARY_TALKER = "GP"
+        MAX_TIME_GAP = timedelta(minutes=5)
+
+        # Split sentences by talker ID
+        print("Grouping by talker ID...")
+        sentences_by_talker = defaultdict(list)
         for sentence in sentences:
-            talker_sentences[sentence.talker_id].append(sentence)
+            sentences_by_talker[sentence.talker_id].append(sentence)
 
-        # Create segments for each talker ID
+        print(f"Found talker IDs: {list(sentences_by_talker.keys())}")
+
+        # If no primary talker, use the talker with the most timestamped sentences
+        if PRIMARY_TALKER not in sentences_by_talker:
+            timestamped_counts = {
+                talker: len([s for s in sens if s.timestamp is not None])
+                for talker, sens in sentences_by_talker.items()
+            }
+            if not timestamped_counts:
+                # No timestamps at all - group by talker ID
+                return [
+                    Segment(sentences=sens) for sens in sentences_by_talker.values()
+                ]
+            PRIMARY_TALKER = max(timestamped_counts.items(), key=lambda x: x[1])[0]
+
+        print(f"Using primary talker: {PRIMARY_TALKER}")
+
+        # Sort primary talker sentences by timestamp
+        primary_sentences = [
+            s for s in sentences_by_talker[PRIMARY_TALKER] if s.timestamp is not None
+        ]
+
+        if not primary_sentences:
+            # No timestamped sentences from primary talker
+            return [Segment(sentences=sens) for sens in sentences_by_talker.values()]
+
+        primary_sentences.sort(key=lambda x: x.timestamp)
+        overall_start = primary_sentences[0].timestamp
+        overall_end = primary_sentences[-1].timestamp
+
+        print(f"Found {len(primary_sentences)} timestamped primary sentences")
+
+        # If we only have one continuous segment from the primary talker
+        # (no large gaps), create a single segment with all sentences
+        primary_continuous = True
+        for i in range(1, len(primary_sentences)):
+            time_diff = (
+                primary_sentences[i].timestamp - primary_sentences[i - 1].timestamp
+            )
+            if time_diff > MAX_TIME_GAP or time_diff < timedelta(0):
+                primary_continuous = False
+                break
+
+        if primary_continuous:
+            print("Single continuous segment detected")
+            # Create one segment with all sentences
+            all_sentences = []
+            # Add timestamped sentences from all talkers
+            for talker_sentences in sentences_by_talker.values():
+                timestamped = [s for s in talker_sentences if s.timestamp is not None]
+                all_sentences.extend(timestamped)
+
+            # Sort all timestamped sentences
+            all_sentences.sort(key=lambda x: x.timestamp)
+
+            # Add non-timestamped sentences at the end
+            for talker_sentences in sentences_by_talker.values():
+                non_timestamped = [s for s in talker_sentences if s.timestamp is None]
+                all_sentences.extend(non_timestamped)
+
+            return [Segment(sentences=all_sentences)]
+
+        # If we have multiple segments, use the original segmentation logic
+        print("Multiple segments detected")
         segments = []
-        for talker_id, talker_sent_list in talker_sentences.items():
-            # Sort by timestamp
-            talker_sent_list.sort(
-                key=lambda x: x.timestamp if x.timestamp else datetime.min
-            )
+        current_segment = Segment(sentences=[primary_sentences[0]])
 
-            # Create segments with chronological consistency
-            current_segment = (
-                Segment(sentences=[talker_sent_list[0]])
-                if talker_sent_list
-                else Segment()
-            )
+        for sentence in primary_sentences[1:]:
+            prev_timestamp = current_segment.sentences[-1].timestamp
+            curr_timestamp = sentence.timestamp
+            time_diff = curr_timestamp - prev_timestamp
 
-            MAX_TIME_GAP = timedelta(
-                hours=24
-            )  # Maximum allowed time gap within a segment
-
-            for sentence in talker_sent_list[1:]:
-                prev_timestamp = current_segment.sentences[-1].timestamp
-                curr_timestamp = sentence.timestamp
-
-                # Check for time discontinuity
-                if prev_timestamp and curr_timestamp:
-                    time_diff = curr_timestamp - prev_timestamp
-                    if curr_timestamp < prev_timestamp or time_diff > MAX_TIME_GAP:
-                        # Time went backwards or gap too large, start a new segment
-                        logging.warning(
-                            f"Time discontinuity detected for {talker_id}: {time_diff}. Sentence: {sentence}"
-                        )
-                        segments.append(current_segment)
-                        current_segment = Segment(sentences=[sentence])
-                    else:
-                        current_segment.sentences.append(sentence)
-                else:
-                    current_segment.sentences.append(sentence)
-
-            # Add the last segment if not empty
-            if current_segment.sentences:
+            if time_diff > MAX_TIME_GAP or time_diff < timedelta(0):
                 segments.append(current_segment)
+                current_segment = Segment(sentences=[sentence])
+            else:
+                current_segment.sentences.append(sentence)
 
+        if current_segment.sentences:
+            segments.append(current_segment)
+
+        # Process other talkers only if we have multiple segments
+        print(f"Processing other talkers for {len(segments)} segments")
+        for talker_id, talker_sentences in sentences_by_talker.items():
+            if talker_id == PRIMARY_TALKER:
+                continue
+
+            for sentence in talker_sentences:
+                if sentence.timestamp is None:
+                    if segments:
+                        segments[-1].sentences.append(sentence)
+                else:
+                    # Find the closest segment
+                    best_segment = min(
+                        segments,
+                        key=lambda seg: min(
+                            abs(sentence.timestamp - s.timestamp)
+                            for s in seg.sentences
+                            if s.timestamp is not None
+                        ),
+                    )
+                    best_segment.sentences.append(sentence)
+
+        # Final sort of each segment
+        for segment in segments:
+            segment.sentences.sort(
+                key=lambda x: (
+                    x.timestamp if x.timestamp else datetime.max,
+                    x.talker_id,
+                )
+            )
+
+        print("Segmentation complete")
         return segments
 
     def parse_file(self, filepath: str) -> Tuple[List[Segment], List[Dict]]:
