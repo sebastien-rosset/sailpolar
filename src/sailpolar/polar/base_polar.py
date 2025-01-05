@@ -1,7 +1,11 @@
 import os
 from abc import ABC, abstractmethod
 import csv
+import pickle
 import numpy as np
+
+
+WIND_SPEED_BINS = [2, 4, 6, 8, 10, 15, 20, 25, 30, 35, 40]
 
 
 class BasePolar(ABC):
@@ -13,13 +17,9 @@ class BasePolar(ABC):
         """Analyze NMEA data and extract polar information."""
         pass
 
-    def _process_polar_data(self, round_speed=0.5, round_angle=5):
+    def _process_polar_data(self):
         """
         Process raw polar data into a structured format.
-
-        Args:
-            round_speed (float): Round wind speeds to nearest multiple
-            round_angle (float): Round wind angles to nearest multiple
 
         Returns:
             tuple: Sorted wind speeds, sorted wind angles, processed data matrix
@@ -30,9 +30,9 @@ class BasePolar(ABC):
         processed_data = {}
 
         for (wind_speed, wind_angle, wind_ref), boat_speed in self.data.items():
-            # Round wind speed and angle
-            rounded_speed = round(wind_speed / round_speed) * round_speed
-            rounded_angle = round(wind_angle / round_angle) * round_angle
+            # Round wind speed to nearest bin center
+            rounded_speed = min(WIND_SPEED_BINS, key=lambda x: abs(x - wind_speed))
+            rounded_angle = round(wind_angle / 5) * 5
 
             # Track unique wind speeds and angles
             wind_speeds.add(rounded_speed)
@@ -71,21 +71,19 @@ class BasePolar(ABC):
 
         return sorted_wind_speeds, sorted_wind_angles, polar_matrix
 
-    def export_csv(self, file_path, round_speed=0.5, round_angle=5):
+    def export_csv(self, file_path):
         """
         Export polar data to a CSV file.
 
         Args:
             file_path (str): Path to the output CSV file
-            round_speed (float): Round wind speeds to nearest multiple
-            round_angle (float): Round wind angles to nearest multiple
         """
         # Ensure the directory exists
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
         # Process polar data
-        sorted_wind_speeds, sorted_wind_angles, polar_matrix = self._process_polar_data(
-            round_speed, round_angle
+        sorted_wind_speeds, sorted_wind_angles, polar_matrix = (
+            self._process_polar_data()
         )
 
         # Prepare headers
@@ -93,7 +91,7 @@ class BasePolar(ABC):
 
         # Write to CSV
         with open(file_path, "w", newline="") as csvfile:
-            writer = csv.writer(csvfile)
+            writer = csv.writer(csvfile, delimiter=";")
 
             # Write headers
             writer.writerow(headers)

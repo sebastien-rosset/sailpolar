@@ -4,9 +4,9 @@ from sailpolar.polar.base_polar import BasePolar
 
 
 class MaxSpeedPolar(BasePolar):
-    def __init__(self, time_window=5):  # 5 seconds time window
+    def __init__(self, time_window: timedelta = timedelta(seconds=1.5)):
         super().__init__()
-        self.time_window = timedelta(seconds=time_window)
+        self.time_window = time_window
 
     def _extract_wind_data(self, sentence):
         """Extract wind speed and angle from different sentence types."""

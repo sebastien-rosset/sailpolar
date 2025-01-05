@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from enum import Enum
 import logging
+import pickle
 import statistics
 from typing import Dict, Optional, List, Set, Tuple
 
@@ -2339,32 +2340,86 @@ class Segment:
 
 
 SENTENCE_TYPES = {
+    # Recommended Minimum Navigation Information (RMC)
+    # Contains essential navigation data including position, time, date, and speed
     "RMC": RMCSentence,
+    # Water Speed and Heading (VHW)
+    # Provides vessel's speed through water and magnetic/true heading
     "VHW": VHWSentence,
+    # Wind Speed and Angle (MWV)
+    # Reports wind speed and angle relative to the vessel
     "MWV": MWVSentence,
+    # Velocity Made Good to Windward (VPW)
+    # Calculates the vessel's velocity component perpendicular to the wind
     "VPW": VPWSentence,
+    # Course Over Ground and Ground Speed (VTG)
+    # Provides vessel's course and speed relative to the ground
     "VTG": VTGSentence,
+    # Relative Wind Speed and Angle (VWR)
+    # Measures wind speed and angle relative to the vessel's bow
     "VWR": VWRSentence,
+    # Recommended Minimum Navigation Information for Waypoint Arrival (RMB)
+    # Provides details about navigation to a destination waypoint
     "RMB": RMBSentence,
+    # True Wind Speed and Angle (VWT)
+    # Calculates true wind speed and angle based on vessel's movement
     "VWT": VWTSentence,
+    # Global Positioning System Fix Data (GGA)
+    # Contains GPS position, time, and quality of fix information
     "GGA": GGASentence,
+    # GPS DOP and Active Satellites (GSA)
+    # Provides information about GPS satellite usage and dilution of precision
     "GSA": GSASentence,
+    # Cross-Track Error (XTE)
+    # Calculates the perpendicular distance from the current position to the desired course
     "XTE": XTESentence,
+    # GPS Satellites in View (GSV)
+    # Details the number, elevation, azimuth, and signal strength of visible GPS satellites
     "GSV": GSVSentence,
+    # Estimated Error Information (RME)
+    # Provides estimated positioning system errors
     "RME": RMESentence,
+    # Geographic Position - Latitude/Longitude (GLL)
+    # Reports current geographical position and time
     "GLL": GLLSentence,
+    # Garmin Proprietary Altitude Sentence (RMZ)
+    # Provides altitude information from Garmin devices
     "RMZ": RMZSentence,
+    # Garmin Proprietary Map Datum (RMM)
+    # Specifies the map datum being used
     "RMM": RMMSentence,
+    # Bearing - Origin to Destination (BOD)
+    # Calculates the bearing from the origin to the destination waypoint
     "BOD": BODSentence,
+    # Route (RTE)
+    # Contains information about the selected route and waypoints
     "RTE": RTESentence,
+    # Waypoint Location (WPL)
+    # Provides the latitude and longitude of a specific waypoint
     "WPL": WPLSentence,
+    # Depth Below Transducer (DBT)
+    # Measures water depth relative to the vessel's transducer
     "DBT": DBTSentence,
+    # Heading - Magnetic (HDM)
+    # Reports the vessel's heading using magnetic north
     "HDM": HDMSentence,
+    # Water Temperature (MTW)
+    # Provides the current water temperature
     "MTW": MTWSentence,
+    # Wind Direction and Speed (MWD)
+    # Gives true wind direction and speed
     "MWD": MWDSentence,
+    # GPS Satellite Fault Detection (GBS)
+    # Provides information about potential GPS satellite errors
     "GBS": GBSSentence,
+    # Logged Distance (VLW)
+    # Tracks cumulative distance traveled through water and over ground
     "VLW": VLWSentence,
+    # Air Temperature (MTA)
+    # Reports the current air temperature
     "MTA": MTASentence,
+    # Text Transmission (TXT)
+    # Allows transmission of text messages from navigation devices
     "TXT": TXTSentence,
 }
 
@@ -2837,3 +2892,30 @@ class NMEA0183Parser:
             self.interpolate_timestamps(segment)
 
         return segments, segment_frequency_stats
+
+    @staticmethod
+    def save_nmea_data(segments: List[Segment], file_path: str):
+        """
+        Save NMEA data to a pickle file.
+
+        Args:
+            segments (List[Segment]): The list of Segment objects to be saved.
+            file_path (str): The file path where the data will be saved.
+        """
+        with open(file_path, "wb") as f:
+            pickle.dump(segments, f)
+
+    @staticmethod
+    def load_nmea_data(file_path: str) -> List[Segment]:
+        """
+        Load NMEA data from a pickle file.
+
+        Args:
+            file_path (str): The file path where the data is stored.
+
+        Returns:
+            List[Segment]: The list of Segment objects loaded from the file.
+        """
+        with open(file_path, "rb") as f:
+            segments = pickle.load(f)
+        return segments
